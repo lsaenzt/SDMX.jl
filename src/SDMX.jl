@@ -1,152 +1,212 @@
 module SDMX
 
-using JSON3, OrderedCollections
-using Tables, PrettyTables
+using HTTP
+using JSON3
+using Tables
+using OrderedCollections
 
-#--------------------------------------------------------------------
-# Tables.jl implementation
-#--------------------------------------------------------------------
+export SDMXQuery, extract, transform, listdimensions
 
-struct Datatable <: Tables.AbstractRow #TODO: add attributes
-    name::String
-    headers::Vector{Symbol}
-    data::Vector{Any}
-    dimensions::OrderedDict{String,Vector{String}}
-    attributes::OrderedDict{String,Vector{String}}
-end
-
-# Declare that SDMXdata is a table
-Tables.istable(::Type{<:Datatable}) = true
-
-# getter methods to avoud getproperty clash
-name(dt::Datatable) = getfield(dt, :name)
-headers(dt::Datatable) = getfield(dt, :headers)
-data(dt::Datatable) = getfield(dt, :data)
-dimensions(dt::Datatable) = getfield(dt, :dimensions)
-attributes(dt::Datatable) = getfield(dt, :attributes)
-
-# Tables.rows implementation. Fallback definitions are valid
-Tables.rowaccess(::Type{<:Datatable}) = true
-Tables.rows(dt::Datatable) = data(dt)
-
-# Complete Abstractrow interface
-Tables.getcolumn(dt::Datatable, i::Int) = [row[i] for row in data(dt)]
-Tables.getcolumn(dt::Datatable, nm::Symbol) = [row[nm] for row in data(dt)]
-Tables.columnnames(dt::Datatable) = headers(dt)
-
-#--------------------------------------------------------------------
-# Datatable prettyprinting
-#--------------------------------------------------------------------
-
-function Base.show(io::IO, dt::Datatable)
-    println("\n ", length(headers(dt)), "x", length(data(dt)), " SDMX.Datatable")
-    printstyled(" ", name(dt), "\n"; bold = true)
-    pretty_table(dt; alignment = :l)
-end
-
-#--------------------------------------------------------------------
-# Datatable generation
-#--------------------------------------------------------------------
+# ==========================================
+# Definición de Estructuras de Datos
+# ==========================================
 
 """
-    SDMX.read(js::Union{Vector{UInt8},String}; alldims::Bool = true)
-
-Constructs SDMX.datatable compatible with Tables.jl
-
-If 'alldims' is set to false only dimensions with more than one value or a specific role are included.
-
-# Example
-```julia  
-    HTTP.get("https://dataurl").body |> SDMX.read```
-
+Estructura que encapsula los parámetros de una consulta SDMX.
+Es agnóstica a la agencia, requiriendo definir 'endpoint' y 'agency_id'.
 """
-# TODOs: select specific dimensions to include, select specific attributes to include, option for unpivoted series
-function read(js::Union{Vector{UInt8},String}; 
-            alldims::Union{Bool, Array{Symbol}} = true, unpivotseries::Bool = false)
+Base.@kwdef struct SDMXQuery
+    endpoint::String
+    agency_id::String # Obligatorio: Identificador del organismo (ej. "ESTAT", "ECB", "OECD")
+    api_version::String = "3.0"
+    context::String = "dataflow"
+    resource::String = "data"
+    flow_ref::String
+    flow_version::String = "1.0"
+    key::Union{String,Vector{String}} = "all"
+    parameters::Dict{String,String} = Dict(
+        "dimensionAtObservation" => "AllDimensions"
+    )
+end
 
-    ds = JSON3.read(js)
+struct SDMXRawData
+    query::SDMXQuery
+    status::Int
+    payload::Vector{UInt8}
+end
 
-    # Dimensions to include in Datatable
-    dims = OrderedDict() # Collects 'Series' (if any) and 'Observations' dimensions    
-    mask = Dict()
-    for (k, v) in ds.structure.dimensions
-        if alldims
-            dims[k] = v
-            mask[k] = Colon()
-        else
-            m = [(length(i["values"]) > 1) | (haskey(i, "role")) for i in v] .== true # BitVector vector for filtering
-            dims[k] = v[m]
-            mask[k] = m
-        end
-    end
+# ==========================================
+# Funciones de Extracción (Extract)
+# ==========================================
 
-    # Headers
-    headers = Vector{Symbol}()
-    for v in values(dims)
-        for i in v
-            push!(headers, Symbol(i["name"]))
-        end
-    end
-    push!(headers, :Value)
+function build_url(q::SDMXQuery)
+    actual_key = q.key isa Vector ? join(q.key, ".") : q.key
 
-    # Rows of observations
-    obs = []
-    if haskey(dims, :series) # FIXME: this creates the tabla in "long" format. Unnecessary as can be selected in the query
-        for (kₛ, vₛ) in ds.dataSets[1].series
-            serieskey = parse.(Int, split(string(kₛ), ":")) .+ 1 #Transforms dimension into a 1-index Array
-            serieskey = serieskey[mask[:series]] # Filters descriptive dimensions if alldims=false
-            dimdesc = Vector{String}(undef, length(serieskey))
-            if unpivotseries
-                println("To be implemented")
-            else
-                for (i, n) in enumerate(serieskey)
-                    dimdesc[i] = dims[:series][i][:values][n]["name"]
-                end
-                for (kₒ, vₒ) in vₛ["observations"]
-                    obsdim = dims[:observation][1]["values"][parse(Int, string(kₒ))+1]["name"]
-                    dimvalues = [dimdesc..., obsdim]
-                    row = [dimvalues..., vₒ[1]]
-                    push!(obs, (; zip(headers, row)...))
-                end
-            end
-        end
-
+    local base::String
+    local headers::Dict{String,String}
+    if q.api_version == "2.1"
+        headers = Dict("Accept" => "application/vnd.sdmx.data+json;version=1.0.0-wd")
+        base = join([q.endpoint, q.resource, q.flow_ref, actual_key], "/")
+    elseif q.api_version == "3.0"
+        headers = Dict("Accept" => "application/vnd.sdmx.data+json;version=2.0.0")
+        urn_group = join([q.agency_id, q.flow_ref, q.flow_version], ",")
+        base = join([q.endpoint, q.resource, q.context, urn_group, actual_key], "/")
     else
-        for (k, v) in ds.dataSets[1].observations
-            dimkey = parse.(Int, split(string(k), ":")) .+ 1 # Transforms dimension into a 1-index Array
-            dimkey = dimkey[mask[:observation]] # Filters descriptive dimensions if alldims=false
-            dimdesc = Vector{String}(undef, length(dimkey))
-            for (i, n) in enumerate(dimkey)
-                dimdesc[i] = dims[:observation][i]["values"][n]["name"]
-            end
-            value = v[1]
-            push!(obs, (; zip(headers, [dimdesc..., value])...))  # Rows as Nametuples for Tables.jl
-        end
+        error("Versión de API no soportada. Usa '2.1' o '3.0'.")
     end
 
-    # Collect info of all dimensions
-    dims_all = OrderedDict()
-    for v in values(ds.structure.dimensions)
-        for i in v
-            dims_all[i["name"]] = [j["name"] for j in i["values"]]
-        end
-    end
-    
-    # Collect info of all attributes
+    query_string = HTTP.URIs.escapeuri(q.parameters)
+    url = isempty(query_string) ? base : "$base?$query_string"
 
-    attr_all = OrderedDict()
-    for v in values(ds.structure.attributes)
-        for i in v
-            attr_all[i["name"]] = [j["name"] for j in i["values"]]
-        end
-    end
-
-    # Create datatable
-    Datatable(ds.structure.name,
-        headers,
-        obs,
-        dims_all,
-        attr_all) # Including headers, observation, all dimensions data, all attribute data
+    return url, headers
 end
 
-end #Module
+function get(q::SDMXQuery)::SDMXRawData
+    url, headers = build_url(q)
+    @info "Ejecutando petición a: $url"
+
+    response = HTTP.get(url, headers; readtimeout=60, retry=true, retries=3, status_exception=false)
+
+    if response.status == 404
+        @warn "Datos no encontrados (HTTP 404). Es posible que la combinación de filtros no exista."
+        return SDMXRawData(q, response.status, UInt8[])
+    elseif response.status != 200
+        error("Fallo crítico al descargar datos SDMX. HTTP Status: $(response.status)")
+    end
+
+    return SDMXRawData(q, response.status, response.body)
+end
+
+# ==========================================
+# Funciones de Transformación (Transform)
+# ==========================================
+
+function transform(raw_data::SDMXRawData)
+    if raw_data.status == 404 || isempty(raw_data.payload)
+        @warn "Transformación omitida debido a payload vacío. Se devuelve una tabla vacía."
+        return NamedTuple()
+    end
+
+    json_obj = JSON3.read(raw_data.payload)
+
+    if raw_data.query.api_version == "2.1"
+        return _transform_v2(json_obj)
+    elseif raw_data.query.api_version == "3.0"
+        return _transform_v3(json_obj)
+    end
+end
+
+function _transform_v2(json_obj)
+    base_obj = haskey(json_obj, :data) ? json_obj.data : json_obj
+    dims = base_obj.structure.dimensions.observation
+    dim_names = Tuple(Symbol(d.id) for d in dims)
+    dim_codes = [[String(v.id) for v in d.values] for d in dims]
+
+    obs_dict = base_obj.dataSets[1].observations
+    n_obs = length(obs_dict)
+
+    columns = [Vector{String}(undef, n_obs) for _ in 1:length(dims)]
+    obs_values = Vector{Union{Float64,Missing}}(undef, n_obs)
+
+    idx = 1
+    for (k, v) in obs_dict
+        indices = split(string(k), ':')
+        for (dim_idx, str_idx) in enumerate(indices)
+            columns[dim_idx][idx] = dim_codes[dim_idx][parse(Int, str_idx)+1]
+        end
+        val = v[1]
+        obs_values[idx] = val === nothing ? missing : Float64(val)
+        idx += 1
+    end
+
+    return NamedTuple{(dim_names..., :OBS_VALUE)}((columns..., obs_values))
+end
+
+function _transform_v3(json_obj)
+    base_obj = haskey(json_obj, :data) ? json_obj.data : json_obj
+
+    dims_obj = base_obj.structure.dimensions
+    dims = haskey(dims_obj, :observation) ? dims_obj.observation : dims_obj.dataset
+
+    dim_names = Tuple(Symbol(d.id) for d in dims)
+    dim_codes = [[String(v.id) for v in d.values] for d in dims]
+
+    obs_dict = base_obj.dataSets[1].observations
+    n_obs = length(obs_dict)
+
+    columns = [Vector{String}(undef, n_obs) for _ in 1:length(dims)]
+    obs_values = Vector{Union{Float64,Missing}}(undef, n_obs)
+
+    idx = 1
+    for (k, v) in obs_dict
+        indices = split(string(k), ':')
+        for (dim_idx, str_idx) in enumerate(indices)
+            columns[dim_idx][idx] = dim_codes[dim_idx][parse(Int, str_idx)+1]
+        end
+        val = v[1]
+        obs_values[idx] = val === nothing ? missing : Float64(val)
+        idx += 1
+    end
+
+    return NamedTuple{(dim_names..., :OBS_VALUE)}((columns..., obs_values))
+end
+
+"""
+    listdimensions(q::SDMXQuery)
+
+Obtiene las dimensiones y valores disponibles de una consulta SDMX para explorar
+sus posibles filtros, de modo que el usuario pueda diseñar el campo `key`.
+"""
+function listdimensions(q::SDMXQuery)
+    local base::String
+    local headers::Dict{String,String}
+
+    if q.api_version == "2.1"
+        headers = Dict("Accept" => "application/vnd.sdmx.data+json;version=1.0.0-wd")
+        base = join([q.endpoint, q.resource, q.flow_ref, "all"], "/")
+    elseif q.api_version == "3.0"
+        headers = Dict("Accept" => "application/vnd.sdmx.data+json;version=2.0.0")
+        urn_group = join([q.agency_id, q.flow_ref, q.flow_version], ",")
+        base = join([q.endpoint, q.resource, q.context, urn_group, "all"], "/")
+    else
+        error("Versión de API no soportada. Usa '2.1' o '3.0'.")
+    end
+
+    # Parámetros óptimos para extraer solo la estructura de dimensiones
+    params = Dict("detail" => "serieskeysonly", "lastNObservations" => "1")
+    query_string = HTTP.URIs.escapeuri(params)
+    url = "$base?$query_string"
+
+    @info "Obteniendo dimensiones desde: $url"
+    resp = HTTP.get(url, headers; readtimeout=60, retry=true, retries=3)
+
+    json_obj = JSON3.read(resp.body)
+    base_obj = haskey(json_obj, :data) ? json_obj.data : json_obj
+    dims_obj = base_obj.structure.dimensions
+
+    # Identifica si la respuesta usa :series, :observation o :dataset
+    ds = haskey(dims_obj, :series) ? dims_obj.series :
+         (haskey(dims_obj, :observation) ? dims_obj.observation : dims_obj.dataset)
+
+    dim_ids = String[]
+    dim_names = String[]
+    value_ids = String[]
+    value_names = String[]
+
+    for dsᵢ in ds
+        for j in dsᵢ.values
+            push!(dim_ids, String(dsᵢ.id))
+            push!(dim_names, String(dsᵢ.name))
+            push!(value_ids, String(j.id))
+            push!(value_names, String(j.name))
+        end
+    end
+
+    return (DIM_ID=dim_ids,
+        DIM_NAME=dim_names,
+        VALUE_ID=value_ids,
+        VALUE_NAME=value_names)
+end
+
+
+end # module

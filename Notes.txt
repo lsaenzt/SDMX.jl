@@ -13,7 +13,7 @@ dataSets::Vector :  - action::String
                     - series::Dict : # if series file
                         - attributes
                         - observations
-strucuture: - links::Vector
+structure: - links::Vector
             - name::String
             - dimensiones::Dict
                 oneof

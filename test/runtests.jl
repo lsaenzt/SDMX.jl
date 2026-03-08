@@ -1,18 +1,70 @@
-using Test, Downloads
+using Test
 using SDMX
 
-const ecb_url = "https://sdw-wsrest.ecb.europa.eu/service/"
-const flowref = "CBD2/"
-const BS = "Q.IE.W0.67._Z._Z.A.F.._X..._Z.LE._T.EUR"
-const PL = "Q.IE.W0.67._Z._Z.A.F.._X.ALL.._Z.T._T.EUR"
+@testset "SDMX.jl" begin
+    @testset "URL Building" begin
+        # Test SDMX 2.1
+        q21 = SDMXQuery(
+            endpoint="https://data-api.ecb.europa.eu/service",
+            agency_id="ECB",
+            api_version="2.1",
+            flow_ref="EXR",
+            key="A.USD.EUR.SP00.A",
+            parameters=Dict("startPeriod" => "2020", "format" => "jsondata")
+        )
+        url, headers = SDMX.build_url(q21)
+        @test occursin("https://data-api.ecb.europa.eu/service/data/EXR/A.USD.EUR.SP00.A", url)
+        @test occursin("startPeriod=2020", url)
+        @test occursin("format=jsondata", url)
+        @test headers["Accept"] == "application/vnd.sdmx.data+json;version=1.0.0-wd"
 
-io = IOBuffer()
-flat = Downloads.download(ecb_url*"data/"*flowref*BS*"?startPeriod=2020&dimensionAtObservation=AllDimensions&format=jsondata", io) |> take!
-series = Downloads.download(ecb_url*"data/"*flowref*BS*"?startPeriod=2020&format=jsondata", io) |> take!
+        # Test SDMX 3.0
+        q30 = SDMXQuery(
+            endpoint="https://fusion.metadatatechnology.com/ws/public/sdmxapi/rest",
+            agency_id="WB",
+            api_version="3.0",
+            context="dataflow",
+            flow_ref="WDI",
+            flow_version="1.0",
+            key="A.SP_POP_TOTL.AFG",
+            parameters=Dict("startPeriod" => "2020")
+        )
+        url, headers = SDMX.build_url(q30)
+        @test occursin("dataflow/WB,WDI,1.0/A.SP_POP_TOTL.AFG", url)
+        @test headers["Accept"] == "application/vnd.sdmx.data+json;version=2.0.0"
+    end
 
-dt_flat = SDMX.read(flat)
-dt_series = SDMX.read(series)
+    @testset "Data Fetch and Transform (ECB 2.1)" begin
+        q = SDMXQuery(
+            endpoint="https://data-api.ecb.europa.eu/service",
+            agency_id="ECB",
+            api_version="2.1",
+            flow_ref="EXR",
+            key="A.USD.EUR.SP00.A",
+            parameters=Dict("startPeriod" => "2020", "format" => "jsondata", "detail" => "dataonly", "dimensionAtObservation" => "AllDimensions")
+        )
+        raw_data = SDMX.get(q)
+        @test raw_data.status == 200
+        @test !isempty(raw_data.payload)
 
-@test SDMX.name(dt_flat) == SDMX.name(dt_series)
-@test SDMX.headers(dt_flat) == SDMX.headers(dt_series)
-@test SDMX.data(dt_flat) == SDMX.data(dt_series)
+        # Transform data
+        tbl = transform(raw_data)
+        @test tbl isa NamedTuple
+        @test haskey(tbl, :OBS_VALUE)
+        @test length(tbl.OBS_VALUE) > 0
+    end
+
+    @testset "listdimensions" begin
+        q = SDMXQuery(
+            endpoint="https://data-api.ecb.europa.eu/service",
+            agency_id="ECB",
+            api_version="2.1",
+            flow_ref="EXR",
+        )
+        dims = listdimensions(q)
+        @test dims isa NamedTuple
+        @test haskey(dims, :DIM_ID)
+        @test "FREQ" in dims.DIM_ID
+        @test "Quarterly" in dims.VALUE_NAME
+    end
+end
