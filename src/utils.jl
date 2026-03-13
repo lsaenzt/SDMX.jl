@@ -1,58 +1,95 @@
-using Downloads
-
-# WARNING: THIS FILE IS WORK-IN-PROGRESS
-
 #--------------------------------------------------------------------
-# Metadata info: dimensions
-#--------------------------------------------------------------------
-function listdimensions(apiurl::String, dataflow::String)
-
-    io = IOBuffer()
-    resp = Downloads.download(apiurl * "data/" * dataflow * "?detail=serieskeysonly&lastNObservations=1&format=jsondata", io) |> take!
-
-    ds = JSON3.read(resp).structure.dimensions.series
-
-    dim = OrderedDict()
-
-    for dsᵢ in ds
-        dim[dsᵢ.name] = NamedTuple(Symbol(j.id) => j.name for j in dsᵢ.values)
-    end
-
-    dim
-end
-
-#--------------------------------------------------------------------
-# Basic Data download
+# Helper functions for certain agencies
 #--------------------------------------------------------------------
 
-"""Generates a SDMX API compliant url
-#kwargs
-    filter::Union{nothing,NamedTuple},
-    updatedAfter::DateTime,
-    firstNObservations::Int,
-    lastNObservations::Int,
-    dimensionAtObservation,
-    attributes = "dsd",
-    measures = "all",
-    includeHistory = false
-"""
-function generateurl(;context = "*", agencyID = "*", resourceID = "*", version = "*", key::String="*", kwargs...) # TODO: substitute query args by kwargs...
-    baseurl = join(["https://ws-entry-point/data/",context,agencyID,resourceID,version,key],"/")
-    query = "/?"*join([String(k)*"="*kwargs[k] for k in keys(kwargs)],"&")
-end
+# Defines a query for the ECB  -> This should work with SDMX 2.1
+ECBquery(flow_ref::String, key::Union{String,Vector{String}}="all") = SDMXQuery(
+    endpoint="https://data-api.ecb.europa.eu/service",
+    agency_id="ECB",
+    api_version="2.1",
+    context="dataflow",
+    resource="data",
+    flow_ref=flow_ref,
+    flow_version="1.0",
+    key=key,
+    parameters=Dict(
+        "dimensionAtObservation" => "AllDimensions"
+    )
+)
 
+# Defines a query for the OECD -> This should work with SDMX 3.0
+const OECDendpoint = "https://sdmx.oecd.org/public/rest/v2"
 
-""" Generates key part of url from a dictionary"""
-function generatekey(dims)
-    key = ""
-    for v in dims
-        key = key*join[v,"+"]*"." # FIXME = sobraría un punto??
-    end
-end
+OECDquery(flow_ref::String, key::Union{String,Vector{String}}="all") = SDMXQuery(
+    endpoint=OECDendpoint,
+    agency_id="OECD",
+    api_version="3.0",
+    context="dataflow",
+    resource="data",
+    flow_ref=flow_ref,
+    flow_version="1.0",
+    key=key,
+    parameters=Dict(
+        "dimensionAtObservation" => "AllDimensions"
+    )
+)
 
+# Defines a query for Eurostat. This should work with SDMX 2.1 but JSON is not available for structure queries
+Eurostatquery(flow_ref::String, key::Union{String,Vector{String}}="all") = SDMXQuery(
+    endpoint="https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1",
+    agency_id="ESTAT",
+    api_version="2.1",
+    context="dataflow",
+    resource="data",
+    flow_ref=flow_ref,
+    flow_version="1.0",
+    key=key,
+    parameters=Dict(
+        "dimensionAtObservation" => "AllDimensions"
+    )
+)
 
-""" Fetch data and creates a SDMX.Datatable"""
-function getseries(url)
-    io = IOBuffer()
-    return Downloads.download(url, io) |> take! |> SDMX.read(alldims = false)
-end
+#Defines a query for the World Bank
+WorldBankquery(flow_ref::String, key::Union{String,Vector{String}}="all") = SDMXQuery(
+    endpoint="https://api.worldbank.org/v2/country/all/indicator/",
+    agency_id="WDI",
+    api_version="2.1",
+    context="dataflow",
+    resource="data",
+    flow_ref=flow_ref,
+    flow_version="1.0",
+    key=key,
+    parameters=Dict(
+        "dimensionAtObservation" => "AllDimensions"
+    )
+)
+
+#Defines a query for the IMF
+IMFquery(flow_ref::String, key::Union{String,Vector{String}}="all") = SDMXQuery(
+    endpoint="https://data.imf.org/rest/sdmx/2.1/data",
+    agency_id="IMF",
+    api_version="2.1",
+    context="dataflow",
+    resource="data",
+    flow_ref=flow_ref,
+    flow_version="1.0",
+    key=key,
+    parameters=Dict(
+        "dimensionAtObservation" => "AllDimensions"
+    )
+)
+
+#Defines a query for the BIS
+BISquery(flow_ref::String, key::Union{String,Vector{String}}="all") = SDMXQuery(
+    endpoint="https://stats.bis.org/api/v2/data",
+    agency_id="BIS",
+    api_version="2.1",
+    context="dataflow",
+    resource="data",
+    flow_ref=flow_ref,
+    flow_version="1.0",
+    key=key,
+    parameters=Dict(
+        "dimensionAtObservation" => "AllDimensions"
+    )
+)

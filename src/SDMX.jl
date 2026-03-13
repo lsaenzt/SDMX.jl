@@ -2,10 +2,8 @@ module SDMX
 
 using HTTP
 using JSON3
-using Tables
-using OrderedCollections
 
-export SDMXQuery, extract, transform, listdimensions
+export SDMXQuery, getdata, transform, getdimensions, getdataflows
 
 # ==========================================
 # Definición de Estructuras de Datos
@@ -19,8 +17,8 @@ Base.@kwdef struct SDMXQuery
     endpoint::String
     agency_id::String # Obligatorio: Identificador del organismo (ej. "ESTAT", "ECB", "OECD")
     api_version::String = "3.0"
-    context::String = "dataflow"
     resource::String = "data"
+    context::String = "dataflow"
     flow_ref::String
     flow_version::String = "1.0"
     key::Union{String,Vector{String}} = "all"
@@ -61,7 +59,7 @@ function build_url(q::SDMXQuery)
     return url, headers
 end
 
-function get(q::SDMXQuery)::SDMXRawData
+function getdata(q::SDMXQuery)::SDMXRawData
     url, headers = build_url(q)
     @info "Ejecutando petición a: $url"
 
@@ -152,12 +150,12 @@ function _transform_v3(json_obj)
 end
 
 """
-    listdimensions(q::SDMXQuery)
+    getdimensions(q::SDMXQuery)
 
 Obtiene las dimensiones y valores disponibles de una consulta SDMX para explorar
 sus posibles filtros, de modo que el usuario pueda diseñar el campo `key`.
 """
-function listdimensions(q::SDMXQuery)
+function getdimensions(q::SDMXQuery)
     local base::String
     local headers::Dict{String,String}
 
@@ -208,5 +206,39 @@ function listdimensions(q::SDMXQuery)
         VALUE_NAME=value_names)
 end
 
+
+"""
+    getdataflows(endpoint::String, sdmxversion::String="3.0")
+
+Obtiene los dataflows disponibles de una consulta SDMX.
+"""
+function getdataflows(endpoint::String, sdmxversion::String="3.0")
+
+    if sdmxversion == "2.1"
+        println("not yet...")
+    elseif sdmxversion == "3.0"
+        url = join([endpoint, "structure/dataflow/*?detail=allstubs"], "/")
+        response = HTTP.get(url, Dict("Accept" => "application/vnd.sdmx.structure+json;version=1.0"))
+    else
+        error("SDMX version not supported. Use '2.1' or '3.0'.")
+    end
+
+    json_obj = JSON3.read(response.body)
+    base_obj = haskey(json_obj, :data) ? json_obj.data : json_obj
+    dflows = base_obj.dataflows
+
+    # Identifica si la respuesta usa :series, :observation o :dataset
+
+    ids = String[]
+    names = String[]
+
+    for dsᵢ in dflows
+        push!(ids, String(dsᵢ.id))
+        push!(names, String(dsᵢ.name))
+    end
+
+    return (ID=ids, NAME=names)
+
+end # function
 
 end # module

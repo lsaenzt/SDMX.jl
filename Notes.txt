@@ -1,3 +1,7 @@
+https://gitlab.algobank.oecd.org/public-documentation/dotstat-migration/-/raw/main/OECD_Data_API_documentation.pdf
+https://github.com/sdmx-twg/sdmx-rest/blob/v2.0.0/doc/availability.md
+https://data-explorer.oecd.org/
+
 SDMX basic structure
 
 header :    - id::String
@@ -9,10 +13,11 @@ dataSets::Vector :  - action::String
                     - validFrom::String # Date
                 oneof
                     - observations::Dict # if flat file
-                    or
+                or
                     - series::Dict : # if series file
                         - attributes
                         - observations
+                        
 structure: - links::Vector
             - name::String
             - dimensiones::Dict
