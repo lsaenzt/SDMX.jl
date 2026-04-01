@@ -1,7 +1,7 @@
 module SDMX
 
 using HTTP
-using JSON3
+using JSON
 
 export SDMXQuery, getdata, transform, getdimensions, getdataflows
 
@@ -85,7 +85,7 @@ function transform(raw_data::SDMXRawData)
         return NamedTuple()
     end
 
-    json_obj = JSON3.read(raw_data.payload)
+    json_obj = JSON.parse(raw_data.payload)
 
     if raw_data.query.api_version == "2.1"
         return _transform_v2(json_obj)
@@ -178,7 +178,7 @@ function getdimensions(q::SDMXQuery)
     @info "Obteniendo dimensiones desde: $url"
     resp = HTTP.get(url, headers; readtimeout=60, retry=true, retries=3)
 
-    json_obj = JSON3.read(resp.body)
+    json_obj = JSON.parse(resp.body)
     base_obj = haskey(json_obj, :data) ? json_obj.data : json_obj
     dims_obj = base_obj.structure.dimensions
 
@@ -223,7 +223,7 @@ function getdataflows(endpoint::String, sdmxversion::String="3.0")
         error("SDMX version not supported. Use '2.1' or '3.0'.")
     end
 
-    json_obj = JSON3.read(response.body)
+    json_obj = JSON.parse(response.body)
     base_obj = haskey(json_obj, :data) ? json_obj.data : json_obj
     dflows = base_obj.dataflows
 
